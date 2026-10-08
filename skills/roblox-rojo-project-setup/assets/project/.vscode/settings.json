@@ -1,0 +1,10 @@
+{
+	"luau-lsp.platform.type": "roblox",
+	"luau-lsp.sourcemap.enabled": true,
+	"luau-lsp.sourcemap.rojoProjectFile": "default.project.json",
+	"luau-lsp.ignoreGlobs": ["tests/**", ".lune/**"],
+	"[luau]": {
+		"editor.defaultFormatter": "JohnnyMorganz.stylua",
+		"editor.formatOnSave": true
+	}
+}

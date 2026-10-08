@@ -1,181 +1,138 @@
 ---
 name: roblox-rojo-project-setup
-description: Set up a new or existing Roblox project for Rojo on Windows - install Rokit, trust and add Rojo (plus optional StyLua/Lune/Wally), install the Rojo Studio plugin, scaffold with rojo init, give the project its own port and place lock, start rojo serve so it outlives the Claude session, and walk the user through connecting Studio. Use when the user asks to "set up Rojo", "start a new Roblox project", "connect Studio to VS Code", or when rojo serve / the Rojo plugin won't connect, syncs the wrong project, or `rojo` is not recognized.
+description: "Use when starting a Roblox project that syncs with Rojo, or adopting one, especially when an agent will build it test-first or drive Studio through an MCP server - setting up Rokit, Rojo, Lune, luau-lsp, Selene or StyLua; choosing what Rojo may sync in a place another person also builds in; unit tests that cannot load a module outside Studio; `rojo` not recognized; the Rojo plugin not connecting or syncing the wrong project; scripts in Studio not matching the files on disk."
 ---
 
 # Roblox Rojo project setup
 
-Gets a Roblox project syncing from disk into Studio with Rojo, and avoids the problems hit in earlier setups: Rokit's trust prompt, VS Code not seeing the new PATH, two projects fighting over port 34872, and a server that dies with the Claude session.
+## Overview
 
-The user works on **Windows** with VS Code + the Claude Code extension, PowerShell as the shell, and projects under `C:\Users\<user>\Desktop\Roblox Games\<Project>`. Adjust paths if that differs.
+Sets up a Roblox project so that most of its logic is tested without Studio and the rest is verified by a play test.
 
-## Ground rules
+**Core principle:** decide at setup which code must run outside the engine, and enforce that by structure: how modules require each other, and which types shared config may hold. Without it, test-first work has nothing to stand on and every check becomes a manual play test.
 
-- **Run commands yourself** unless the user asks to approve each one. Stop and ask only on an error you can't fix or a step that needs them.
-- **Things only the user can do:** click **Connect** in the Rojo plugin, restart Studio, turn on Studio settings, publish places. Say clearly when you're waiting on one of these.
-- **Sync is one-way (disk → Studio).** Code edited inside Studio is overwritten. Tell the user once.
-- Rojo does **not** save the place. The user still saves/publishes from Studio.
+Commands are for Windows with PowerShell, where they were run. Adjust paths and shells elsewhere.
 
-## 1. Preflight
+## What only the human can do
 
-Check what's already there before installing anything:
+- Click **Connect** in the Rojo plugin. No tool can press it.
+- Restart Studio after the plugin is installed.
+- Publish the place, and turn on API access for data stores.
 
-```powershell
-Test-Path "$env:USERPROFILE\.rokit\bin\rokit.exe"
-Get-ChildItem -Name *.project.json, rokit.toml, aftman.toml, foreman.toml -ErrorAction SilentlyContinue
-Test-Path "$env:LOCALAPPDATA\Roblox\Plugins\RojoManagedPlugin.rbxm"
-Get-NetTCPConnection -State Listen -LocalPort 34870..34899 -ErrorAction SilentlyContinue | Select-Object LocalPort, OwningProcess
-```
+Ask for Connect in your first message, with the port, then keep working. Steps 2 to 5 need no Studio. Never sit waiting for the click.
 
-- If `aftman.toml` or `foreman.toml` exists, the project uses another toolchain manager. Ask before switching it to Rokit.
-- Note which Rojo ports are taken. Other projects' servers will matter in step 6.
+## Steps
 
-## 2. Install Rokit (skip if present)
+Do them in order. Each has a result you can check.
 
-Rokit has no package-manager install on Windows. Download the release and self-install:
+### 1. Preflight
 
-```powershell
-$release = Invoke-RestMethod https://api.github.com/repos/rojo-rbx/rokit/releases/latest
-$asset = $release.assets | Where-Object { $_.name -like "*windows-x86_64*" } | Select-Object -First 1
-$zip = Join-Path $env:TEMP "rokit.zip"
-Invoke-WebRequest $asset.browser_download_url -OutFile $zip
-Expand-Archive $zip -DestinationPath (Join-Path $env:TEMP "rokit") -Force
-& (Join-Path $env:TEMP "rokit\rokit.exe") self-install
-```
+Find out what exists before installing or writing anything.
 
-It prints nothing on success. Verify that `~\.rokit\bin\rokit.exe` exists.
+- **Machine:** which tools are installed, whether the project already has a toolchain file, which Rojo ports are in use. Commands: `references/install-and-serve.md`, section 1.
+- **Studio**, when a Studio MCP server is attached: the Rojo plugin's version, who owns the place, and the place settings code depends on (streaming, avatar type, chat version). Snippet: `references/studio.md`, section 1.
+- **Ask the user once:** does anyone else build in this place (map, models, UI)? Their containers must never be synced. Write the answer into the project's CLAUDE.md.
 
-**PATH:** `self-install` adds `~\.rokit\bin` to the user PATH, but the current shell and **every VS Code terminal** keep the old PATH until VS Code is fully restarted. For the rest of this session, prepend it yourself:
+### 2. Toolchain, pinned to the plugin
 
-```powershell
-$env:Path = "$env:USERPROFILE\.rokit\bin;$env:Path"
-```
+Install Rokit, then add Rojo, luau-lsp, Lune, StyLua and Selene. Load `references/install-and-serve.md` section 2 before the first `rokit` command: the trust step and the PATH step both trip up a first install otherwise.
 
-## 3. Add Rojo (and optional tools)
+The Rojo CLI and the Studio plugin must be the same version.
 
-From the project folder:
+- Plugin already installed (step 1 found a version): pin the CLI to it, `rokit add rojo-rbx/rojo@<plugin version>`.
+- No plugin yet: add the latest CLI, then `rojo plugin install`, which installs the matching plugin.
+
+### 3. Project file: scripts only
+
+Copy the template (`assets/project/` beside this file) into the project folder:
 
 ```powershell
-rokit init                      # creates rokit.toml (skip if it exists)
-rokit trust rojo-rbx/rojo       # REQUIRED first - see below
-rokit add rojo-rbx/rojo
-rojo --version
+Copy-Item -Recurse -Force "<this skill's folder>\assets\project\*" .
 ```
 
-**Trust step:** `rokit add` on an untrusted tool fails with `ERROR The following tool has not been marked as trusted` because the trust prompt can't be answered in a non-interactive shell. Its hint just repeats the failing command. Run `rokit trust <tool>` first, then `add`.
+Its `default.project.json` names three script containers and nothing else: `ReplicatedStorage.Shared`, `ServerScriptService.Server`, `StarterPlayerScripts.Client`. Rojo only manages what the tree names, and `$ignoreUnknownInstances` leaves every other child of those services alone. `Workspace`, `Lighting` and a teammate's folders are never touched.
 
-Optional tools, each needing `trust` then `add`:
+Do **not** use the project file `rojo init` writes in a place that already has content. It also maps `Workspace`, `Lighting` and `SoundService` and sets their properties.
 
-| Tool | Rokit id | Use |
+Set `name` to something specific. Add `servePort` and `servePlaceIds` in step 6. Run `git init` if the folder is not a repository yet.
+
+### 4. The module rule
+
+Every module is one of two kinds. Decide when the file is created.
+
+| | Pure | Engine-bound |
 |---|---|---|
-| StyLua | `JohnnyMorganz/StyLua` | formatter (`stylua src`) |
-| Lune | `lune-org/lune` | run pure Luau tests outside Studio |
-| Wally | `UpliftGames/wally` | packages such as ProfileStore |
-| Selene | `Kampfkarren/selene` | linter |
+| Uses | numbers, strings, tables | `game`, services, Instances, engine types |
+| Requires others by | string path: `require("./Config/GameConfig")` | instance: `require(ReplicatedStorage.Shared.Formulas)` |
+| Verified by | a spec in `tests/`, written first | a play test (step 8) |
+| Lives in | `src/shared`, `src/server/Lib` | everywhere else |
 
-Add these only if the user wants them or the project plan calls for them.
+- A pure module may only require pure modules.
+- Shared config that pure modules read holds plain data only. Values that need `Vector3`, `Color3` or `Enum` go in a separate config module that only engine-bound code requires.
+- Put as much logic as possible in pure modules: formulas, costs, rolls, save-data shaping, rate limits, geometry on plain numbers. Engine-bound code should mostly call them.
 
-## 4. Install the Studio plugin
+The template's `src/shared/Formulas.luau`, `src/shared/Config/GameConfig.luau` and `tests/Formulas.spec.luau` show the pattern. Replace them with the project's first real module, spec first.
 
-```powershell
-rojo plugin install
-Test-Path "$env:LOCALAPPDATA\Roblox\Plugins\RojoManagedPlugin.rbxm"
-```
+String requires were only run from plain `.luau` files. Try one before relying on a pure module written as a folder with `init.luau`.
 
-Studio loads plugins at startup. If Studio is already open, tell the user to **restart it**.
-
-## 5. Scaffold the project
-
-For a new project:
+### 5. The check command
 
 ```powershell
-rojo init        # Place project: default.project.json, src/{client,server,shared}, .gitignore, README.md
+lune run check
 ```
 
-- `rojo init` also runs `git init`. Mention this to the user.
-- It leaves existing files such as a plan doc alone, but check `git status` afterwards.
-- Default mapping: `src/shared` → `ReplicatedStorage.Shared`, `src/server` → `ServerScriptService.Server`, `src/client` → `StarterPlayer.StarterPlayerScripts.Client`. `init.server.luau` / `init.client.luau` become the parent script.
-- `sourcemap.json` is already gitignored. Keep it that way.
+It builds the sourcemap, type checks `src` with luau-lsp against Roblox's type definitions, lints with Selene, checks formatting with StyLua, and runs the specs under Lune. The first run downloads the type definitions, so it needs the network.
 
-For an existing Studio place with no files yet, scaffold the same way, then tell the user that the first Connect will **replace** the scripts in the mapped containers with what's on disk. They should export or copy anything they need first.
+Expect `All checks passed.` and a test count above zero. `lune run test <name>` runs only the specs whose file name contains `<name>`. Run the check before saying any work is done, and before every commit.
 
-## 6. Give the project its own port and lock it to its place
+### 6. Serve and connect
 
-Every Rojo project defaults to **port 34872**. With two projects open, Studio can connect to the wrong server and the first sync overwrites that place's scripts with the other project's. The files on disk are fine, but the Studio copy is clobbered. Prevent it in the project file:
+Give the project its own port, lock it to its place, start the server in a window that outlives the session, and confirm which project is answering. Then hand the user the Connect steps. Commands: `references/install-and-serve.md`, sections 3 and 4.
 
-```json
-{
-  "name": "Vending Empire (School)",
-  "servePort": 34873,
-  "servePlaceIds": [1234567890],
-  "tree": { "...": "..." }
-}
-```
+### 7. Confirm the sync landed
 
-- **`name`** is the label the Rojo plugin and `/api/rojo` report. Make it specific.
-- **`servePort`:** pick an unused port from preflight. Use one port per project, or per place if a repo has several `*.project.json` files (e.g. `default` 34872, `mall` 34873, `tokyo` 34874).
-- **`servePlaceIds`:** Rojo then refuses to sync into any other place. The place ID only exists once the place is published. Until then, leave this out and tell the user to send you the ID after publishing.
+After the user connects, compare each script's `Source` length in Studio with the file's byte count on disk. They must be equal. Snippet: `references/studio.md`, section 2.
 
-Record the port in the project's CLAUDE.md so future sessions use it.
+Do this before every play test, not only the first. A stopped server leaves Studio half-synced with no warning.
 
-## 7. Start the server so it survives the session
+### 8. Verify engine-bound code by a play test
 
-A `rojo serve` started as a Claude background task dies when the session ends or hits its time limit. Start it in its own minimized window instead:
+Start play, run Luau on the server and the client, read the Output. The template's server and client scripts each print one line; seeing both is the first proof the loop works. Recipe and the tools' limits: `references/studio.md`, section 3. Load it before the first play test.
 
-```powershell
-Start-Process -FilePath "cmd.exe" `
-  -ArgumentList '/k', 'title Rojo - <Project> <port> && rojo serve default.project.json --port <port>' `
-  -WorkingDirectory "<project folder>" -WindowStyle Minimized
-```
+### 9. Record and commit
 
-Then verify **which project** is answering, not just that the port is open. Rojo 7.7 returns MessagePack, so strip the binary:
+Write into the project's CLAUDE.md: the commands (`lune run check`, the serve command and port), the module rule, "edit on disk, never in Studio", and which containers belong to someone else. Commit `rokit.toml`, the project file, `src/`, `tests/`, `.lune/` and the config files.
 
-```bash
-curl -s -m 3 http://127.0.0.1:<port>/api/rojo | tr -c '[:print:]' ' ' | grep -o "projectName [A-Za-z0-9 ()+-]*"
-```
+Then report to the user: what is installed and at which versions, the port, what is running and in which window, and what they still have to do (restart VS Code, click Connect, publish and send the place ID).
 
-If the port belongs to another project's server, find and stop that server and tell the user:
+## Done when
 
-```powershell
-Get-NetTCPConnection -State Listen -LocalPort <port> | Select-Object OwningProcess
-Get-CimInstance Win32_Process -Filter "Name='rojo.exe'" | Select-Object ProcessId, CommandLine
-Stop-Process -Id <pid>
-```
+Check each line against what you saw, not what you expect.
 
-Leave `rojo sourcemap ... --watch` processes alone. They don't hold ports.
+- [ ] `lune run check` printed `All checks passed.` with a test count above zero.
+- [ ] One spec was seen failing before its code was written.
+- [ ] The server on the project's port reports this project's name.
+- [ ] Script lengths in Studio equal the byte counts on disk.
+- [ ] A play test showed the server and client start lines in the Output.
+- [ ] CLAUDE.md holds the commands, the port and the module rule.
 
-**Sourcemap (for luau-lsp autocomplete):** if the user has the Luau Language Server extension, run a watcher in another window:
+Name to the user any line you could not check. Do not report the setup as finished while one is open.
 
-```powershell
-rojo sourcemap default.project.json --output sourcemap.json --include-non-scripts --watch
-```
+## Traps
 
-## 8. Connect Studio (user steps)
-
-Give the user this, filled in with the real port:
-
-1. Open the place in Studio. A new Baseplate is fine for a fresh project. Restart Studio if the plugin was just installed.
-2. **Plugins** tab → **Rojo** → check that the address is `localhost` and the port is **<port>** → **Connect**.
-3. Accept the change list. Your `src` folders appear under ReplicatedStorage / ServerScriptService / StarterPlayerScripts.
-4. Keep the "Rojo - <Project>" window open while working. Closing it stops sync, but nothing is lost. Run the same command again and reconnect.
-
-If the project will use DataStores/ProfileStore, also tell them to enable **Game Settings → Security → Enable Studio Access to API Services**. This only works after the place is published.
-
-## 9. Finish
-
-- Write or update the project's **CLAUDE.md** with the tooling (Rokit-pinned tools, the project's port, the serve command, "edit on disk, never in Studio") and the folder → instance mapping.
-- Commit `rokit.toml`, the project file(s), `src/`, `.gitignore` and CLAUDE.md.
-- Report: what's installed (with versions), the port, what's running and in which window, and what the user still has to do (restart VS Code, click Connect, publish and send the place ID).
-
-## Troubleshooting
-
-| Symptom | Cause | Fix |
+| Trap | What happens | Fix |
 |---|---|---|
-| `rojo : The term 'rojo' is not recognized` in VS Code | VS Code kept the PATH from before Rokit was installed | Fully quit VS Code (all windows) and reopen. Right now: `$env:Path = "$env:USERPROFILE\.rokit\bin;$env:Path"` |
-| `tool has not been marked as trusted` | Rokit trust prompt can't run non-interactively | `rokit trust <owner/tool>`, then `rokit add` again |
-| No Rojo button in Studio | Plugin installed while Studio was open | Restart Studio. Check `RojoManagedPlugin.rbxm` exists |
-| Connect fails | Server not running, wrong port, or Windows Firewall | Check with the `/api/rojo` curl. Restart the serve window. Allow `rojo.exe` through the firewall |
-| Studio shows another project's scripts | Another project's server was on the same port | Stop that server, start the right one, verify `projectName`, Connect and accept. Then add `servePort` / `servePlaceIds` (step 6) |
-| Server gone after a while | It was a Claude background task | Restart with `Start-Process` (step 7) |
-| New remotes/instances in the project file don't appear | Project-file changes need a server restart | Restart `rojo serve`, then reconnect |
-| Need code in Studio but the user can't click Connect now | The plugin's Connect needs a human | Ask them to click Connect. Don't hand-copy sources into Studio unless the user asks. |
+| Engine type in config a pure module reads | The spec cannot load: `attempt to index nil with 'new'` | Move the value to a config module only engine-bound code requires |
+| Waiting for Connect | Work stalls on a click | Ask at the start, then do steps 2 to 5 |
+| Pushing scripts into Studio by hand while waiting | When Rojo connects midway, later hand writes replace its synced copies | `references/studio.md`, section 4, before any hand write |
+| Tagged templates parked in storage | `CollectionService:GetTagged` also returns instances in `ServerStorage` and `ReplicatedStorage` | One helper that keeps only `instance:IsDescendantOf(workspace)` |
+| Table with gaps in its number keys | It survives neither a data store nor a remote | Keep the set in memory, convert to a sorted list at the boundary, unit test the round trip |
+| Project file edited while the server runs | The server keeps serving the old tree | Restart `rojo serve`, ask the user to reconnect |
+| A synced instance changes class (ModuleScript to Folder) | Live sync leaves the stale instance | Delete it in Studio, then reconnect |
+| Two projects on the default port | Studio connects to the wrong one and overwrites the place's scripts | Own `servePort` and `servePlaceIds` (step 6) |
+| Zero specs matched | Would read as "0 failed" | The template's runner exits 1 instead; keep that |
+
+## References
+
+- `references/install-and-serve.md`: load before the first `rokit` command, before starting or checking a server, and whenever `rojo` is not recognized or the plugin will not connect.
+- `references/studio.md`: load before any call to a Studio MCP tool, before the first play test, and before writing anything into Studio by hand.

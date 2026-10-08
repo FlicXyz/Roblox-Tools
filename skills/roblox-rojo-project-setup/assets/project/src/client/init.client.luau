@@ -1,0 +1,3 @@
+--!strict
+
+print("[Client] started")
